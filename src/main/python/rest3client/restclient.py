@@ -31,21 +31,27 @@ logger = logging.getLogger(__name__)
 logging.getLogger('requests.packages.urllib3.connectionpool').setLevel(logging.CRITICAL)
 
 
+class RedactingFormatter(object):
+
+    def __init__(self, orig_formatter, patterns):
+        self.orig_formatter = orig_formatter
+        self._patterns = patterns
+
+    def format(self, record):
+        msg = self.orig_formatter.format(record)
+        for pattern in self._patterns:
+            msg = msg.replace(pattern, "[REDACTED]")
+        return msg
+
+    def __getattr__(self, attr):
+        return getattr(self.orig_formatter, attr)
+
+
 class RESTclient():
     """ class exposing abstracted requests-based http verb apis
     """
 
     cabundle = '/etc/ssl/certs/ca-certificates.crt'
-    items_to_redact = [
-        'Authorization',
-        'Auth',
-        'x-api-key',
-        'Password',
-        'password',
-        'JWT',
-        'Token',
-        'token'
-    ]
 
     def __init__(self, hostname, **kwargs):
         """ class constructor
@@ -73,6 +79,18 @@ class RESTclient():
         if self.certfile and (self.certkey or self.certpass):
             ssl_adapter = SSLAdapter(certfile=self.certfile, certkey=self.certkey, certpass=self.certpass)
             self.session.mount(f'https://{self.hostname}', ssl_adapter)
+
+        items_to_redact = [
+            self.password,
+            self.api_key,
+            self.bearer_token,
+            self.token,
+            self.jwt,
+            self.certpass
+        ]
+
+        for h in logging.root.handlers:
+            h.setFormatter(RedactingFormatter(h.formatter, patterns=[item for item in items_to_redact if item]))
 
         self.retries = kwargs.get('retries', [])
         self.decorate_retries()
@@ -104,37 +122,34 @@ class RESTclient():
         return headers
 
     def get_arguments(self, endpoint, kwargs):
-        """ return key word arguments to pass to requests method
+        """ update kwargs to pass to requests method
         """
-        arguments = copy.deepcopy(kwargs)
-
         headers = self.get_headers(**kwargs)
-        if 'headers' not in arguments:
-            arguments['headers'] = headers
+        if 'headers' not in kwargs:
+            kwargs['headers'] = headers
         else:
-            arguments['headers'].update(headers)
+            kwargs['headers'].update(headers)
 
-        if 'verify' not in arguments or arguments.get('verify') is None:
-            arguments['verify'] = self.cabundle
+        if 'verify' not in kwargs or kwargs.get('verify') is None:
+            kwargs['verify'] = self.cabundle
 
         if endpoint.startswith('http'):
-            arguments['address'] = endpoint
+            kwargs['address'] = endpoint
         else:
-            arguments['address'] = f'https://{self.hostname}{endpoint}'
-        arguments.pop('raw_response', None)
-        return arguments
+            kwargs['address'] = f'https://{self.hostname}{endpoint}'
 
     def log_request(self, function_name, arguments, noop):
         """ log request function name and redacted arguments
         """
-        redacted_arguments = self.redact(arguments)
+        # import pprint
+        # pp = pprint.PrettyPrinter(indent=4)
+        loggable_arguments = arguments
         try:
-            redacted_arguments = json.dumps(redacted_arguments, indent=2, sort_keys=True)
+            loggable_arguments = json.dumps(dict(arguments), indent=2, sort_keys=True, default=str)
         except TypeError:
             pass
-
         cert = f'\nCERT: {self.certfile}' if self.certfile else ''
-        logger.debug(f"\n{function_name}: {arguments['address']} NOOP: {noop}\n{redacted_arguments}{cert}")
+        logger.debug(f"\n{function_name}: {arguments['address']} NOOP: {noop}\n{loggable_arguments}{cert}")
 
     def get_error_message(self, response):
         """ return error message from response
@@ -155,7 +170,7 @@ class RESTclient():
         logger.debug('processing response')
 
         if not response.ok:
-            logger.debug('response was not OK')
+            logger.debug('response was NOT OK')
             error_message = self.get_error_message(response)
             logger.debug(f'{error_message}: {response.status_code}')
             response.raise_for_status()
@@ -184,11 +199,13 @@ class RESTclient():
             """ decorator method to prepare and handle requests and responses
             """
             noop = kwargs.pop('noop', False)
-            arguments = self.get_arguments(endpoint, kwargs)
-            self.log_request(function.__name__.upper(), arguments, noop)
+            raw_response = kwargs.pop('raw_response', None)
+            self.get_arguments(endpoint, kwargs)
+            self.log_request(function.__name__.upper(), kwargs, noop)
             if noop:
                 return
-            response = function(self, endpoint, **arguments)
+            response = function(self, endpoint, **kwargs)
+            kwargs['raw_response'] = raw_response
             return self.get_response(response, **kwargs)
         return _request_handler
 
@@ -375,30 +392,6 @@ class RESTclient():
             self.put = retry(**retry_kwargs)(self.put)
             self.delete = retry(**retry_kwargs)(self.delete)
             self.patch = retry(**retry_kwargs)(self.patch)
-
-    @classmethod
-    def redact(cls, items):
-        """ return redacted copy of items dictionary
-        """
-        def _redact(items):
-            """ redact private method
-            """
-            if isinstance(items, dict):
-                for item_to_redact in cls.items_to_redact:
-                    if item_to_redact in items:
-                        items[item_to_redact] = '[REDACTED]'
-                for item in items.values():
-                    _redact(item)
-            elif isinstance(items, Iterable) and not isinstance(items, str):
-                for item in items:
-                    _redact(item)
-
-        scrubbed = copy.deepcopy(items)
-        if 'address' in scrubbed:
-            del scrubbed['address']
-        for value in scrubbed.values():
-            _redact(value)
-        return scrubbed
 
     @staticmethod
     def get_loggable_kwargs(kwargs):

@@ -89,8 +89,8 @@ class RESTclient():
             self.certpass
         ]
 
-        for h in logging.root.handlers:
-            h.setFormatter(RedactingFormatter(h.formatter, patterns=[item for item in items_to_redact if item]))
+        for handler in logging.root.handlers:
+            handler.setFormatter(RedactingFormatter(handler.formatter, patterns=[item for item in items_to_redact if item]))
 
         self.retries = kwargs.get('retries', [])
         self.decorate_retries()

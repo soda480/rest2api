@@ -66,6 +66,7 @@ class RESTclient():
         self.password = kwargs.get('password')
 
         self.api_key = kwargs.get('api_key')
+        self.apikey = kwargs.get('apikey')
 
         self.bearer_token = kwargs.get('bearer_token')
 
@@ -83,6 +84,7 @@ class RESTclient():
         items_to_redact = [
             self.password,
             self.api_key,
+            self.apikey,
             self.bearer_token,
             self.token,
             self.jwt,
@@ -99,8 +101,8 @@ class RESTclient():
         """ return headers to pass to requests method
         """
         headers = kwargs.get('headers', {})
-
-        if 'Content-Type' not in headers:
+        if 'files' not in kwargs and 'Content-Type' not in headers:
+            # do not set Content-Type when files are being posted
             headers['Content-Type'] = 'application/json'
 
         if self.username and self.password:
@@ -109,6 +111,9 @@ class RESTclient():
 
         if self.api_key:
             headers['x-api-key'] = self.api_key
+
+        if self.apikey:
+            headers['apikey'] = self.apikey
 
         if self.bearer_token:
             headers['Authorization'] = f'Bearer {self.bearer_token}'
@@ -141,13 +146,7 @@ class RESTclient():
     def log_request(self, function_name, arguments, noop):
         """ log request function name and redacted arguments
         """
-        # import pprint
-        # pp = pprint.PrettyPrinter(indent=4)
-        loggable_arguments = arguments
-        try:
-            loggable_arguments = json.dumps(dict(arguments), indent=2, sort_keys=True, default=str)
-        except TypeError:
-            pass
+        loggable_arguments = json.dumps(arguments, indent=2, sort_keys=True, default=str)
         cert = f'\nCERT: {self.certfile}' if self.certfile else ''
         logger.debug(f"\n{function_name}: {arguments['address']} NOOP: {noop}\n{loggable_arguments}{cert}")
 
